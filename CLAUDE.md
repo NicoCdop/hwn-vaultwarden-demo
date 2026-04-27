@@ -9,33 +9,28 @@ Despliegue **DEMO** de [Vaultwarden](https://github.com/dani-garcia/vaultwarden)
 
 > **No es producción.** Datos pueden borrarse. No usar para credenciales reales.
 
-## 📍 Checkpoint / Resume here (2026-04-26 21:00 GMT-4)
+## 📍 Estado actual (2026-04-27)
 
-**Última acción**: deploy DEMO funcionando en cuenta vieja. Usuario decidió **migrar a otra cuenta de Railway**. Hizo `railway logout` + `railway login` con la cuenta nueva + `railway unlink`. Está reiniciando la terminal.
+**DEMO desplegada y funcional en cuenta `automations@hirewithnear.com`**:
 
-**Estado en cuenta VIEJA** (sigue corriendo, hay que apagarlo desde dashboard de esa cuenta cuando se confirme la migración):
-- Project: `hwn-vaultwarden-demo` (id `fec8044b-9784-4630-96cd-bf8d18e5ab9a`)
-- Service: `vaultwarden`, image `vaultwarden/server:latest`
-- Volumen: `vaultwarden-volume` montado en `/data` (id `63a277a8-bccc-4b38-a503-4b89b4969d98`)
-- Domain: `https://vaultwarden-production-99a1.up.railway.app` (targetPort 80)
-- Email account: `nchirino@dataonpulse.com`
+| | Valor |
+|---|---|
+| Project | `Vaultwarden` (id `fc1438b0-837a-4553-adfe-e216c932bd13`) |
+| Environment | `production` (id `7056467c-57cd-4e66-ac49-80299f89ab9d`) |
+| Service | `Vaultwarden` (id `20ce1121-a682-4e6e-896c-0189e1a3f1fb`), image `vaultwarden/server:latest`, versión actual `1.35.8` |
+| Volume | `vaultwarden-volume` montado en `/data` (id `047581c3-66bb-4a42-861c-28faf3b3e105`) |
+| Service Domain | `near-vaultwarden.up.railway.app` (id `eaa832e9-c5a8-44c5-9421-8b3c00f89e53`, targetPort=80) |
+| URL pública | `https://near-vaultwarden.up.railway.app` |
+| Healthcheck | `/alive` → 200 |
+| Email outbound | SMTP2GO en **puerto 8025** (ver gotcha abajo) |
+| Hardening | `ADMIN_TOKEN` Argon2id PHC, `SIGNUPS_ALLOWED=true` (cerrar tras onboarding), `INVITATIONS_ALLOWED=true`, `LOG_LEVEL=info` |
+| Estado de uso | 4 usuarios registrados (Nicolas + 3 colegas), 1 organización (`HireWithNear`) |
 
-**Estado en cuenta NUEVA**: aún sin proyecto. Token de la cuenta vieja en `~/.railway/config.json` quedó sobreescrito por el nuevo login.
+> **Cuenta vieja (`nchirino@dataonpulse.com`)**: el proyecto `hwn-vaultwarden-demo` con dominio `vaultwarden-production-99a1.up.railway.app` quedó residual. **Borrar desde el dashboard de esa cuenta** para no consumir recursos.
 
-**Próxima acción cuando la sesión se reanude**:
-1. Verificar login de la cuenta nueva: `mcp__Railway__check-railway-status` + `mcp__Railway__list-projects` (debe mostrar los proyectos de la cuenta nueva, no `hwn-vaultwarden-demo`).
-2. Preguntar al usuario: ¿crear `hwn-vaultwarden-demo` desde cero en la cuenta nueva, o linkear a un proyecto existente?
-3. Si "desde cero", replicar todo el flujo (esta vez sin sorpresas, ya está documentado abajo):
-   - `railway add --service vaultwarden --image vaultwarden/server:latest`
-   - **Regenerar** `ADMIN_TOKEN` Argon2 con `argon2` CLI (no reutilizar el viejo) — pasar al usuario para que lo guarde.
-   - `railway variables --set 'ADMIN_TOKEN=...'` con single quotes (gotcha del `$`)
-   - `railway variables --set` para `SIGNUPS_ALLOWED=true`, `INVITATIONS_ALLOWED=true`, `LOG_LEVEL=info`, `RAILWAY_RUN_UID=0`, `ROCKET_PORT=80`
-   - `mcp__Railway__generate-domain` → `set DOMAIN=https://...`
-   - Crear volumen vía GraphQL (`volumeCreate` mutation, ver gotchas abajo)
-   - **Setear `targetPort: 80`** vía `serviceDomainUpdate` mutation (gotcha crítico de image-based deploys)
-   - `railway service redeploy --service vaultwarden --yes`
-   - Verificar `/alive` → 200
-4. Recordar al usuario: ir al dashboard de la cuenta vieja a **borrar el proyecto `hwn-vaultwarden-demo`** para no consumir crédito.
+**TODOs pendientes**:
+- Cerrar `SIGNUPS_ALLOWED=false` cuando todos los miembros previstos estén registrados.
+- Decidir si se promueve este DEMO a producción o se rebuilda con tag pinneado + Postgres.
 
 ## Decisiones de arquitectura
 
@@ -61,9 +56,21 @@ Documentadas en `.env.example`. Las **mínimas** para que arranque en Railway:
 | `ADMIN_TOKEN` | Argon2 PHC string | Generar con `vaultwarden hash` o `argon2` CLI; **nunca commitearlo** |
 | `SIGNUPS_ALLOWED` | `true` (solo durante primer registro) → luego `false` | |
 | `INVITATIONS_ALLOWED` | `true` | Permite invitar desde admin panel |
-| `RAILWAY_RUN_UID` | `0` | Solo si la imagen corre non-root y hay errores de permisos sobre el volumen |
+| `RAILWAY_RUN_UID` | `0` | Solo si la imagen corre non-root y hay errores de permisos sobre el volumen. **No fue necesario en la cuenta nueva** (la imagen escribe `/data` sin problemas) |
 | `ROCKET_PORT` | `80` (default de la imagen) | Railway proxy detecta `EXPOSE` del Dockerfile padre |
-| `LOG_LEVEL` | `info` | Subir a `debug` solo para troubleshooting puntual |
+| `LOG_LEVEL` | `info` | Subir a `debug` solo para troubleshooting puntual (especialmente para SMTP — `rustls`/`lettre` solo loguean en debug) |
+
+### SMTP (outbound email vía SMTP2GO)
+
+| Var | Valor DEMO | Notas |
+|---|---|---|
+| `SMTP_HOST` | `mail.smtp2go.com` | |
+| `SMTP_PORT` | **`8025`** | **NO usar 2525/587/465** desde Railway us-west2 — los paquetes se dropean silenciosamente (gotcha documentado abajo) |
+| `SMTP_SECURITY` | `starttls` | SMTP2GO acepta STARTTLS en cualquier puerto, incluido 8025 |
+| `SMTP_USERNAME` | (SMTP user creado en SMTP2GO) | Puede ser un email o username arbitrario |
+| `SMTP_PASSWORD` | (password generado por SMTP2GO) | Setear con single quotes en bash si tiene `$`, `@`, etc. |
+| `SMTP_FROM` | `nicolas.chirino@hirewithnear.com` | Debe ser un sender verificado en SMTP2GO (idealmente dominio verificado con SPF+DKIM) |
+| `SMTP_FROM_NAME` | `Vaultwarden HireWithNear` | Display name |
 
 ## Aprendizajes (actualizar a medida que avanzamos)
 
@@ -132,6 +139,48 @@ Documentadas en `.env.example`. Las **mínimas** para que arranque en Railway:
 
 - **Auth a GraphQL**: el token guardado en `~/.railway/config.json` (`accessToken`) es **personal account token** — válido para todas las operaciones bajo esa cuenta. Para CI/CD usar tokens scoped (Project Tokens) creados desde dashboard.
 
+- **Matiz al gotcha de `targetPort=null`**: en la cuenta nueva (`automations@hirewithnear.com`) el deploy *sí* respondía `/alive` con `targetPort=null`, probablemente porque la variable `PORT=80` (autoinjectada por Railway en algunos servicios) le sirve de hint al proxy. Igual conviene **fijar `targetPort=80` explícitamente** vía `serviceDomainUpdate` para no depender de ese fallback no-documentado.
+
+### Sobre SMTP outbound (SMTP2GO desde Railway)
+
+- **GOTCHA crítico — Railway us-west2 dropea silenciosamente conexiones TCP a `mail.smtp2go.com` en puertos 2525, 587 y 465**. Sin RST, sin timeout del kernel, sin error de lettre/Vaultwarden — la conexión cuelga indefinidamente (>90s y sigue). Síntoma diagnóstico con `LOG_LEVEL=debug`: lettre completa la carga de root certs (`rustls add_parsable_certificates processed 150 valid certs`) y después **silencio absoluto**, ningún log de TLS handshake o EHLO.
+- **Workaround validado**: usar el puerto **`8025`** (alternativo que SMTP2GO advertised exactamente para casos de cloud egress filtering). Funcionó al primer intento desde Railway, handshake TLS y AUTH completos en <2s.
+- **No probados** (pero teóricamente también inmunes al filtro): `80`, `443`, `8465`. Si 8025 falla en el futuro, intentar primero `8465` con `force_tls`.
+- **Verificación rápida** del estado de SMTP sin tener que mandar invitaciones reales:
+  ```bash
+  COOKIE=$(mktemp); TOKEN='<admin-passphrase>'
+  curl -sS -c "$COOKIE" -X POST https://<domain>/admin --data-urlencode "token=$TOKEN" -o /dev/null
+  curl -sS --max-time 30 -b "$COOKIE" -X POST https://<domain>/admin/test/smtp \
+    -H 'Content-Type: application/json' -d '{"email":"<your-email>"}' -w "\nHTTP %{http_code} | %{time_total}s\n"
+  rm -f "$COOKIE"
+  ```
+  - HTTP 200 en <3s → SMTP funciona.
+  - Cuelga >30s con HTTP 000 → estás en el bug del puerto-bloqueado.
+  - HTTP 401 → tu cookie expiró (redeploy reciente), volver a hacer login.
+- **Para enviar emails ad-hoc** desde local (anuncios, tests, debugging) usando SMTP2GO en puerto 8025:
+  ```python
+  import smtplib
+  from email.message import EmailMessage
+  msg = EmailMessage()
+  msg["From"]    = "<sender-name> <sender@hirewithnear.com>"
+  msg["To"]      = "alice@x.com, bob@y.com"
+  msg["Subject"] = "..."
+  msg.set_content("body...")
+  with smtplib.SMTP("mail.smtp2go.com", 8025, timeout=30) as s:
+      s.starttls()
+      s.login("<smtp-user>", "<smtp-password>")
+      s.send_message(msg)
+  ```
+
+### Sobre el admin panel API (introspección sin DB)
+
+- El admin panel de Vaultwarden es session-based (cookie tras `POST /admin` con `token=<plaintext>`). Una vez autenticado:
+  - `GET /admin/users` con `Accept: application/json` devuelve **JSON** con todos los usuarios (campos en camelCase: `id`, `email`, `name`, `createdAt`, `lastActive`, `userEnabled`, `organizations[].name`, etc.).
+  - `GET /admin/organizations/overview` devuelve **HTML** (no hay variant JSON; se puede scrapear con `pup`/regex si hace falta).
+  - `POST /admin/test/smtp` con `{"email":"..."}` envía un test email y devuelve 200 si SMTP relay aceptó.
+  - `GET /admin/diagnostics` HTML; al final del body hay un bloque JSON con `db_type`, `current_release`, `latest_release`, `dns_resolved`, `has_http_access`, `running_within_container`, etc. Útil para health/observability programmatic.
+- Esto evita necesidad de exec into container o acceso directo a SQLite para introspección.
+
 ## Flujo de trabajo en este repo
 
 ```
@@ -143,20 +192,47 @@ Para cambios solo de env vars: usar `railway variables --set KEY=VALUE` (re-depl
 ## Scripts / comandos útiles
 
 ```bash
-# Generar admin token Argon2
-docker run --rm vaultwarden/server /vaultwarden hash
+# === Generar ADMIN_TOKEN Argon2id PHC (versión que SÍ funciona) ===
+# El comando docker run --rm vaultwarden/server /vaultwarden hash falla
+# en modo no-interactivo. Usar argon2 CLI directo con preset Bitwarden:
+brew install argon2  # solo la primera vez
+PASSPHRASE=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 32)
+SALT=$(openssl rand -base64 16)
+PHC=$(printf '%s' "$PASSPHRASE" | argon2 "$SALT" -e -id -k 65540 -t 3 -p 4)
+echo "ADMIN passphrase (guardar fuera del repo): $PASSPHRASE"
+echo "PHC para Railway: $PHC"
+railway variables --service Vaultwarden --skip-deploys --set "ADMIN_TOKEN=$PHC"
 
-# Linkear este repo a Railway
-railway link
+# === Linkear / inspeccionar / desplegar ===
+railway link --project fc1438b0-837a-4553-adfe-e216c932bd13 --environment production
+railway whoami                                          # confirma cuenta linkeada
+railway status                                          # project/env/service actual
+railway logs --service Vaultwarden                      # logs en vivo
+railway variables --service Vaultwarden --kv            # listar vars sin máscara
+railway redeploy --service Vaultwarden --yes            # forzar redeploy
 
-# Ver logs en vivo
-railway logs
+# === Setear variables (recordar single quotes para valores con $/@) ===
+railway variables --service Vaultwarden --skip-deploys \
+  --set 'KEY1=valor1' \
+  --set 'KEY2=valor con $ literal'
+railway redeploy --service Vaultwarden --yes
 
-# Listar variables
-railway variables
+# === Test rápido de SMTP (ver "Sobre SMTP outbound" arriba) ===
+COOKIE=$(mktemp); TOKEN='<admin-passphrase-plaintext>'
+curl -sS -c "$COOKIE" -X POST https://near-vaultwarden.up.railway.app/admin \
+  --data-urlencode "token=$TOKEN" -o /dev/null
+curl -sS --max-time 30 -b "$COOKIE" -X POST \
+  https://near-vaultwarden.up.railway.app/admin/test/smtp \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"nicolas.chirino@hirewithnear.com"}' \
+  -w "\nHTTP %{http_code} | %{time_total}s\n"
+rm -f "$COOKIE"
 
-# Setear variable
-railway variables --set "DOMAIN=https://xxx.up.railway.app"
+# === GraphQL: fijar targetPort=80 en el dominio (image-based deploy) ===
+TOKEN=$(jq -r '.user.token // .user.accessToken' ~/.railway/config.json)
+curl -sS -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"query":"mutation($i:ServiceDomainUpdateInput!){serviceDomainUpdate(input:$i)}","variables":{"i":{"serviceDomainId":"eaa832e9-c5a8-44c5-9421-8b3c00f89e53","domain":"near-vaultwarden.up.railway.app","environmentId":"7056467c-57cd-4e66-ac49-80299f89ab9d","serviceId":"20ce1121-a682-4e6e-896c-0189e1a3f1fb","targetPort":80}}}'
 ```
 
 ## Checklist antes de promover a producción
