@@ -59,7 +59,50 @@ Documentadas en `.env.example`. Las **mínimas** para que arranque en Railway:
 
 ### Sobre el flow de deploy
 
-- _(rellenar durante ejecución)_
+- **Generar `ADMIN_TOKEN`**: `docker run --rm vaultwarden/server /vaultwarden hash` **falla en modo no-interactivo** (panic: "No such device or address" — necesita TTY). Workaround: usar `argon2` CLI directo con los params del preset Bitwarden:
+  ```bash
+  brew install argon2
+  echo -n "$PASSPHRASE" | argon2 "$(openssl rand -base64 32)" -e -id -k 65540 -t 3 -p 4
+  ```
+  El output es un PHC string `$argon2id$v=19$m=65540,t=3,p=4$...$...` listo para pegar en `ADMIN_TOKEN`.
+
+- **GOTCHA: variables con `$` literales** se corrompen si se setean vía el MCP `set-variables` (que internamente arma un comando shell). Bash expande `$argon2id`, `$v`, `$m` como variables vacías y deja el valor truncado. **Siempre** setear PHC strings con bash directo y single quotes:
+  ```bash
+  railway variables --set 'ADMIN_TOKEN=$argon2id$v=19$m=...$...$...' --service <name> --skip-deploys
+  ```
+  Verificar con `railway variables --service <name> --kv | grep ADMIN_TOKEN` (no con la tabla, que enmascara).
+
+- **GOTCHA: `railway service [NAME] delete`** (sintaxis posicional, marcada como deprecated en help) opera silenciosamente sobre el **servicio linkeado** ignorando el `[NAME]`. **Usar siempre la flag**: `railway service delete --service <name> --yes`.
+
+- **`railway add --repo <user>/<repo>`** falla con "Unauthorized" si la GitHub App de Railway no está autorizada al repo. Path de fix: dashboard → Account → Integrations → install Railway GitHub App. Para DEMO se evitó usando `--image` (deploy desde registry público sin GitHub).
+
+- **`railway add --image vaultwarden/server:latest`** crea el servicio listo para correr — sin Dockerfile, sin build step, sin GitHub. Trade-off: no hay auto-deploy en push (cada actualización requiere `railway service redeploy` o re-`add`). Para DEMO es óptimo.
+
+- **El primer `railway up` antes de tener servicio** muestra "Failed to deploy" desde el MCP, pero **sí crea un servicio** con una deployment FAILED. Limpieza necesaria si pasa.
+
+- **Volúmenes en Railway no son gestionables vía CLI v4.x** — solo dashboard (Service → Settings → Volumes → New Volume → mount path `/data`). Adjuntar/cambiar un volumen dispara redeploy automáticamente.
+
+- **Servicios image-based ignoran `railway.json`** para `build.builder` (lógico, no hay build), pero respetan `deploy.*` (healthcheck, restart policy). Nuestro `railway.json` queda como referencia de prod, no como config activa de la DEMO.
+
+- **GOTCHA crítico — image-based deploys NO autodetectan `EXPOSE`**. La domain se crea con `targetPort: null` y el proxy devuelve `502 Application failed to respond` aunque el contenedor esté `RUNNING`. Verificación + fix vía GraphQL:
+  ```bash
+  # Inspect
+  curl -sS -X POST https://backboard.railway.com/graphql/v2 \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"query":"query($p:String!){domains(projectId:$p,environmentId:\"<env-id>\",serviceId:\"<svc-id>\"){serviceDomains{id domain targetPort}}}","variables":{"p":"<project-id>"}}'
+  # Fix
+  curl -sS -X POST https://backboard.railway.com/graphql/v2 \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"query":"mutation($i:ServiceDomainUpdateInput!){serviceDomainUpdate(input:$i)}","variables":{"i":{"serviceDomainId":"<sd-id>","domain":"<domain>","environmentId":"<env-id>","serviceId":"<svc-id>","targetPort":80}}}'
+  ```
+
+- **MCP de Railway (v actual) no expone volúmenes ni domain target port** — pero la **GraphQL API pública** (`https://backboard.railway.com/graphql/v2`) sí los gestiona. Auth: bearer token desde `~/.railway/config.json` → `user.accessToken`. Mutations clave: `volumeCreate(input:VolumeCreateInput)` y `serviceDomainUpdate(input:ServiceDomainUpdateInput)`. Schema introspectable con `__type(name:"...")`. Esto evita salidas al dashboard durante deploys IaC.
+
+- **Adjuntar un volumen NO siempre redeploya solo** — disparar manual con `railway service redeploy --service <name> --yes` si la nueva deployment no aparece en ~30s.
+
+- **Endpoints de healthcheck Vaultwarden**: `/alive` devuelve un timestamp ISO (200 OK). No requiere auth. Útil para `healthcheckPath`.
+
+- **Auth a GraphQL**: el token guardado en `~/.railway/config.json` (`accessToken`) es **personal account token** — válido para todas las operaciones bajo esa cuenta. Para CI/CD usar tokens scoped (Project Tokens) creados desde dashboard.
 
 ## Flujo de trabajo en este repo
 
