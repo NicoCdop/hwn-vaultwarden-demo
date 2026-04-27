@@ -9,6 +9,34 @@ Despliegue **DEMO** de [Vaultwarden](https://github.com/dani-garcia/vaultwarden)
 
 > **No es producción.** Datos pueden borrarse. No usar para credenciales reales.
 
+## 📍 Checkpoint / Resume here (2026-04-26 21:00 GMT-4)
+
+**Última acción**: deploy DEMO funcionando en cuenta vieja. Usuario decidió **migrar a otra cuenta de Railway**. Hizo `railway logout` + `railway login` con la cuenta nueva + `railway unlink`. Está reiniciando la terminal.
+
+**Estado en cuenta VIEJA** (sigue corriendo, hay que apagarlo desde dashboard de esa cuenta cuando se confirme la migración):
+- Project: `hwn-vaultwarden-demo` (id `fec8044b-9784-4630-96cd-bf8d18e5ab9a`)
+- Service: `vaultwarden`, image `vaultwarden/server:latest`
+- Volumen: `vaultwarden-volume` montado en `/data` (id `63a277a8-bccc-4b38-a503-4b89b4969d98`)
+- Domain: `https://vaultwarden-production-99a1.up.railway.app` (targetPort 80)
+- Email account: `nchirino@dataonpulse.com`
+
+**Estado en cuenta NUEVA**: aún sin proyecto. Token de la cuenta vieja en `~/.railway/config.json` quedó sobreescrito por el nuevo login.
+
+**Próxima acción cuando la sesión se reanude**:
+1. Verificar login de la cuenta nueva: `mcp__Railway__check-railway-status` + `mcp__Railway__list-projects` (debe mostrar los proyectos de la cuenta nueva, no `hwn-vaultwarden-demo`).
+2. Preguntar al usuario: ¿crear `hwn-vaultwarden-demo` desde cero en la cuenta nueva, o linkear a un proyecto existente?
+3. Si "desde cero", replicar todo el flujo (esta vez sin sorpresas, ya está documentado abajo):
+   - `railway add --service vaultwarden --image vaultwarden/server:latest`
+   - **Regenerar** `ADMIN_TOKEN` Argon2 con `argon2` CLI (no reutilizar el viejo) — pasar al usuario para que lo guarde.
+   - `railway variables --set 'ADMIN_TOKEN=...'` con single quotes (gotcha del `$`)
+   - `railway variables --set` para `SIGNUPS_ALLOWED=true`, `INVITATIONS_ALLOWED=true`, `LOG_LEVEL=info`, `RAILWAY_RUN_UID=0`, `ROCKET_PORT=80`
+   - `mcp__Railway__generate-domain` → `set DOMAIN=https://...`
+   - Crear volumen vía GraphQL (`volumeCreate` mutation, ver gotchas abajo)
+   - **Setear `targetPort: 80`** vía `serviceDomainUpdate` mutation (gotcha crítico de image-based deploys)
+   - `railway service redeploy --service vaultwarden --yes`
+   - Verificar `/alive` → 200
+4. Recordar al usuario: ir al dashboard de la cuenta vieja a **borrar el proyecto `hwn-vaultwarden-demo`** para no consumir crédito.
+
 ## Decisiones de arquitectura
 
 | Decisión | Elección DEMO | Razón | Plan para prod |
