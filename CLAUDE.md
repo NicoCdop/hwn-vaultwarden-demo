@@ -28,9 +28,81 @@ Despliegue **DEMO** de [Vaultwarden](https://github.com/dani-garcia/vaultwarden)
 
 > **Cuenta vieja (`nchirino@dataonpulse.com`)**: el proyecto `hwn-vaultwarden-demo` con dominio `vaultwarden-production-99a1.up.railway.app` quedó residual. **Borrar desde el dashboard de esa cuenta** para no consumir recursos.
 
-**TODOs pendientes**:
-- Cerrar `SIGNUPS_ALLOWED=false` cuando todos los miembros previstos estén registrados.
-- Decidir si se promueve este DEMO a producción o se rebuilda con tag pinneado + Postgres.
+**Decisiones abiertas** (estratégicas, sin fecha):
+- Promover este DEMO a producción tal-cual *vs* rebuild con tag pinneado + Postgres + dominio propio. Ver "Checklist antes de promover a producción" al final del doc.
+
+## 🗂️ Tareas planificadas
+
+### T1 — Cerrar `SIGNUPS_ALLOWED` una vez completo el onboarding
+
+**Trigger**: cuando los miembros previstos del equipo estén todos registrados. Fail-safe: si no se completó al **2026-05-28** (30 días), cerrar igual y los faltantes se invitan vía admin panel.
+
+**Pre-flight check** — listar usuarios actuales y cruzar con la lista esperada del equipo:
+```bash
+COOKIE=$(mktemp); TOKEN='<admin-passphrase>'
+curl -sS -c "$COOKIE" -X POST https://near-vaultwarden.up.railway.app/admin \
+  --data-urlencode "token=$TOKEN" -o /dev/null
+curl -sS -b "$COOKIE" -H 'Accept: application/json' \
+  https://near-vaultwarden.up.railway.app/admin/users \
+  | jq -r '.[] | "\(.email)\t\(.name)\t\(.lastActive)"'
+rm -f "$COOKIE"
+```
+
+**Ejecución**:
+```bash
+railway link --project fc1438b0-837a-4553-adfe-e216c932bd13 --environment production
+railway variables --service Vaultwarden --set 'SIGNUPS_ALLOWED=false'  # auto-redeploys
+railway variables --service Vaultwarden --kv | grep SIGNUPS_ALLOWED
+# expect: SIGNUPS_ALLOWED=false
+```
+
+**Verificación**:
+- Visitar `https://near-vaultwarden.up.railway.app/#/register` en ventana incógnito → la UI debe mostrar registro deshabilitado.
+- Curl: `curl -sS https://near-vaultwarden.up.railway.app/api/config | jq '.environment.cloudRegion // .signupAllowed // .'` (campo varía según versión; lo importante es que no permita `POST /identity/accounts/register`).
+
+**Rollback**: si después aparece un usuario nuevo válido:
+- *Preferido*: invitarlo desde admin panel (ahora que SMTP funciona, le llega email automático con magic link).
+- *Si no*: reabrir temporalmente con `--set 'SIGNUPS_ALLOWED=true'`, que se registre, volver a cerrar.
+
+**Owner**: Nicolas. **ETA**: ≤ 30 días desde 2026-04-28.
+
+### T2 — Borrar proyecto residual en cuenta vieja `nchirino@dataonpulse.com`
+
+**Trigger**: ahora — la cuenta nueva está estable, en uso, y la migración no requiere fallback.
+
+**Contexto del residual**:
+- Cuenta: `nchirino@dataonpulse.com`
+- Project: `hwn-vaultwarden-demo` (id `fec8044b-9784-4630-96cd-bf8d18e5ab9a`)
+- Volumen: `vaultwarden-volume` id `63a277a8-bccc-4b38-a503-4b89b4969d98` (vacío para uso real, era pruebas)
+- Domain: `https://vaultwarden-production-99a1.up.railway.app`
+
+**Pre-flight check** — confirmar que NO hay datos productivos ni tráfico reciente antes de destruir:
+```bash
+railway logout && railway login   # con nchirino@dataonpulse.com
+railway link --project fec8044b-9784-4630-96cd-bf8d18e5ab9a
+railway logs --service vaultwarden 2>&1 | tail -200    # buscar requests recientes
+curl -sS -o /dev/null -w "%{http_code}\n" https://vaultwarden-production-99a1.up.railway.app/alive
+# Si responde 200 y los logs muestran tráfico de últimos 7 días, PARAR y avisar antes de borrar.
+```
+
+**Ejecución** (irreversible — verificar pre-flight antes):
+- Vía dashboard (recomendado por reversibilidad/UX): `railway open` → Project Settings → Danger Zone → Delete Project → escribir el nombre exacto para confirmar.
+- Vía CLI si está disponible: `railway delete --project fec8044b-9784-4630-96cd-bf8d18e5ab9a --yes` (verificar el subcomando exacto en `railway delete --help` antes — puede haber cambiado entre versiones).
+
+**Post-acción** — volver a la cuenta de trabajo:
+```bash
+railway logout && railway login   # con automations@hirewithnear.com
+railway link --project fc1438b0-837a-4553-adfe-e216c932bd13 --environment production
+railway whoami   # confirmar
+```
+
+**Verificación**:
+- `railway list-projects` (logueado en cuenta vieja) ya NO debe listar `hwn-vaultwarden-demo`.
+- `curl -sS -o /dev/null -w "%{http_code}\n" https://vaultwarden-production-99a1.up.railway.app/alive` debe devolver 404 o no resolver DNS.
+
+**Rollback**: imposible. Una vez borrado el project, el volumen y deployments se pierden — por eso el pre-flight check es no-negociable.
+
+**Owner**: Nicolas. **ETA**: esta semana (≤ 2026-05-04).
 
 ## Decisiones de arquitectura
 
